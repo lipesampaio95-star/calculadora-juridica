@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- 1. CONFIGURAÇÃO INICIAL DA PÁGINA ---
 st.set_page_config(
-    page_title="Precificação Jurídica | Escritório",
+    page_title="Precificação Jurídica | Delgado & Sampaio",
     page_icon="⚖️",
     layout="wide"
 )
@@ -46,12 +46,12 @@ def gerar_pdf(cliente, servico, horas, valor_total, valor_hora, margem, impostos
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, f"VALOR TOTAL DOS HONORARIOS: R$ {valor_total:,.2f}", ln=True)
     
-    # Rodapé Técnico (Opcional - útil para conferência interna)
+    # Rodapé Técnico
     pdf.ln(20)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, f"Nota Interna: Margem Liq. {margem*100:.0f}% | Impostos {impostos*100:.0f}%", ln=True)
     
-    # Retorna o binário codificado em Latin-1 para aceitar acentos básicos
+    # Retorna o binário codificado em Latin-1 (remove caracteres especiais complexos para evitar erro)
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 def gerar_excel(dados_dict):
@@ -65,65 +65,86 @@ def gerar_excel(dados_dict):
 
 # --- 3. BARRA LATERAL: ENTRADA DE DADOS ---
 
-st.sidebar.header("🏢 Custos do Escritório")
+st.sidebar.header("🏢 Custos Operacionais")
 
 # SELEÇÃO: MODO DE ENTRADA DOS CUSTOS FIXOS
 modo_entrada = st.sidebar.radio(
     "Como deseja inserir os Custos Fixos?",
-    ("Digitar Manualmente", "Upload de Planilha (.xlsx)")
+    ("Digitar Manualmente", "Upload de Planilha/Relatório")
 )
 
 custo_fixo_total = 0.0
 
-# Lógica A: Entrada Manual
+# --- LÓGICA A: ENTRADA MANUAL ---
 if modo_entrada == "Digitar Manualmente":
     with st.sidebar.expander("📝 Preenchimento Manual", expanded=True):
         aluguel = st.number_input("Aluguel + Condomínio (R$)", value=2500.00, step=50.0)
-        software = st.number_input("Software / Sistemas (R$)", value=300.00, step=10.0)
+        software = st.number_input("Software / Sistemas (R$)", value=4500.00, step=100.0)
         marketing = st.number_input("Marketing / Site (R$)", value=500.00, step=50.0)
         administrativo = st.number_input("Equipe Adm. + Contador (R$)", value=2000.00, step=50.0)
         outros_fixos = st.number_input("Outros / Diversos (R$)", value=500.00, step=50.0)
         
         custo_fixo_total = aluguel + software + marketing + administrativo + outros_fixos
 
-# Lógica B: Upload de Arquivo
+# --- LÓGICA B: UPLOAD INTELIGENTE ---
 else:
-    st.sidebar.info("A planilha deve ter uma coluna chamada **'Valor'**, **'Custo'** ou **'Total'**.")
-    arquivo_upload = st.sidebar.file_uploader("Subir arquivo Excel", type=['xlsx', 'xls'])
+    st.sidebar.info("O sistema aceita Excel (.xlsx) ou CSV. Ele buscará automaticamente a coluna de valores.")
+    arquivo_upload = st.sidebar.file_uploader("Subir arquivo", type=['xlsx', 'xls', 'csv'])
     
     if arquivo_upload is not None:
         try:
-            df_custos = pd.read_excel(arquivo_upload)
+            # 1. Lê o arquivo dependendo do formato
+            if arquivo_upload.name.endswith('.csv'):
+                df_custos = pd.read_csv(arquivo_upload)
+            else:
+                df_custos = pd.read_excel(arquivo_upload)
             
-            # Algoritmo para encontrar a coluna de valor automaticamente
-            colunas_possiveis = ['Valor', 'valor', 'Custo', 'custo', 'Total', 'total', 'Amount']
-            coluna_alvo = next((col for col in colunas_possiveis if col in df_custos.columns), None)
+            # 2. Limpeza: Remove espaços extras dos nomes das colunas
+            df_custos.columns = df_custos.columns.str.strip()
+            
+            # 3. Busca Inteligente: Procura colunas que tenham "valor", "custo", "amount"
+            coluna_alvo = None
+            for col in df_custos.columns:
+                # Procura palavras chave ignorando maiúsculas/minúsculas
+                if any(x in col.lower() for x in ['valor', 'custo', 'amount', 'total']):
+                    # Verifica se a coluna tem números (ignora colunas de texto)
+                    # Tenta converter para numérico para garantir
+                    try:
+                        pd.to_numeric(df_custos[col], errors='raise')
+                        coluna_alvo = col
+                        break
+                    except:
+                        continue # Se der erro na conversão, não é essa coluna
             
             if coluna_alvo:
                 custo_fixo_total = df_custos[coluna_alvo].sum()
-                st.sidebar.success(f"✅ Arquivo lido com sucesso!")
-                st.sidebar.metric("Custo Fixo Importado", f"R$ {custo_fixo_total:,.2f}")
+                st.sidebar.success(f"✅ Coluna identificada: '{coluna_alvo}'")
+                st.sidebar.metric("Custo Total Importado", f"R$ {custo_fixo_total:,.2f}")
                 
-                with st.sidebar.expander("Ver Itens Importados"):
-                    st.dataframe(df_custos, hide_index=True)
+                with st.sidebar.expander("Ver primeiras linhas"):
+                    st.dataframe(df_custos.head(), hide_index=True)
             else:
-                st.sidebar.error("❌ Não encontrei coluna de valor (ex: 'Valor', 'Custo').")
+                st.sidebar.error("❌ Não encontrei uma coluna numérica de valor.")
+                st.sidebar.caption("Certifique-se de que a coluna de valores tenha apenas números.")
+                
         except Exception as e:
             st.sidebar.error(f"Erro ao ler arquivo: {e}")
     else:
         st.sidebar.warning("Aguardando upload...")
 
-# Exibe o total calculado (seja manual ou upload)
+# Exibe o total calculado (apenas se for manual, pois no upload já mostra o metric)
 if modo_entrada == "Digitar Manualmente":
     st.sidebar.markdown(f"**Total Fixos: R$ {custo_fixo_total:,.2f}**")
 
 st.sidebar.markdown("---")
 
-# MÃO DE OBRA
-with st.sidebar.expander("2. Capacidade e Equipe Jurídica", expanded=True):
-    horas_disponiveis = st.number_input("Horas Totais Disponíveis (Mês)", value=160, help="Soma das horas de todos os advogados")
+# --- MÃO DE OBRA ---
+with st.sidebar.expander("2. Capacidade e Equipe", expanded=True):
+    horas_disponiveis = st.number_input("Horas Totais Disponíveis (Mês)", value=160, help="Soma das horas úteis de todos os advogados")
     eficiencia = st.slider("Eficiência Produtiva (%)", 50, 100, 80, help="% do tempo faturável")
-    salario_adv = st.number_input("Custo Mensal Advogados (R$)", value=8000.00, help="Salário + Encargos")
+    
+    st.caption("Se os salários já estiverem na planilha de upload, deixe este campo zerado.")
+    salario_adv = st.number_input("Custo Mensal Advogados (Extra Upload) (R$)", value=0.00)
 
 # CÁLCULOS INTERNOS DE CUSTO HORA
 horas_faturaveis = horas_disponiveis * (eficiencia / 100)
@@ -144,7 +165,7 @@ with col_entrada:
     
     c1, c2 = st.columns(2)
     horas_estimadas = c1.number_input("Horas Estimadas", min_value=1, value=10)
-    custos_variaveis = c2.number_input("Custos Variáveis (R$)", value=0.00, help="Deslocamento, custas, etc.")
+    custos_variaveis = c2.number_input("Custos Variáveis (R$)", value=0.00, help="Deslocamento, custas, taxas")
 
     st.markdown("### 🎯 Definição de Margem")
     m1, m2 = st.columns(2)
