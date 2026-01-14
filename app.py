@@ -4,18 +4,17 @@ from fpdf import FPDF
 import io
 from datetime import datetime
 
-# --- 1. CONFIGURAÇÃO INICIAL DA PÁGINA ---
+# --- 1. CONFIGURAÇÃO INICIAL ---
 st.set_page_config(
     page_title="Precificação Jurídica | Delgado & Sampaio",
     page_icon="⚖️",
     layout="wide"
 )
 
-st.title("⚖️ Delgado & Sampaio Advogados")
+st.title("⚖️ Delgado & Sampaio Sociedade de Advogados ⚖️")
 st.markdown("---")
 
 # --- 2. FUNÇÕES DE EXPORTAÇÃO ---
-
 def gerar_pdf(cliente, servico, horas, valor_total, valor_hora, margem, impostos, custos_totais):
     pdf = FPDF()
     pdf.add_page()
@@ -49,19 +48,18 @@ def gerar_excel(dados_dict):
     writer.close()
     return output.getvalue()
 
-# --- 3. BARRA LATERAL: CUSTOS OPERACIONAIS ---
-
+# --- 3. BARRA LATERAL: CUSTOS ---
 st.sidebar.header("🏢 Custos Operacionais")
 
 # MODO DE ENTRADA
 modo_entrada = st.sidebar.radio(
     "Fonte dos Dados:",
-    ("Custos Fixos 2025 (Salvo)", "Upload Relatório Financeiro")
+    ("Custos Fixos 2025 (Salvo)", "Upload Relatório/Planilha")
 )
 
 custo_fixo_total = 0.0
 
-# --- LÓGICA A: DADOS SALVOS (MÉDIA REAL 2025 + PRÓ-LABORE) ---
+# --- A: DADOS SALVOS ---
 if modo_entrada == "Custos Fixos 2025 (Salvo)":
     st.sidebar.caption("Dados baseados na planilha 'Custo Operacional Atualizado'")
     with st.sidebar.expander("📝 Ajustar Valores Padrão", expanded=True):
@@ -71,60 +69,70 @@ if modo_entrada == "Custos Fixos 2025 (Salvo)":
         
         st.markdown("**Equipe e Sócios**")
         equipe_fixa = st.number_input("Salários Equipe (CLT+Encargos)", value=11281.60, step=100.0)
-        pro_labore = st.number_input("Pró-Labore (Sócios)", value=20000.00, step=500.0, help="Retirada fixa dos sócios")
+        pro_labore = st.number_input("Pró-Labore (Sócios)", value=20000.00, step=500.0)
         
         st.markdown("**Outros**")
-        # Soma de Energia (236) + Net (115) + Saúde (3703) + Terc (3032) + Mat (450) + Taxas (300)
         outros_fixos = st.number_input("Gerais (Energia, Saúde, Manut.)", value=7836.89, step=100.0)
         
         custo_fixo_total = aluguel + software + administrativo + equipe_fixa + pro_labore + outros_fixos
 
-# --- LÓGICA B: UPLOAD (CORRIGIDO PARA LER DESPESAS NEGATIVAS) ---
+# --- B: UPLOAD COM FILTRO ANTI-DUPLICAÇÃO ---
 else:
-    st.sidebar.info("O sistema vai somar APENAS os valores negativos (Despesas).")
+    st.sidebar.info("O sistema ignora linhas de 'Total' para não duplicar.")
     arquivo_upload = st.sidebar.file_uploader("Subir arquivo Excel/CSV", type=['xlsx', 'xls', 'csv'])
     
     if arquivo_upload is not None:
         try:
-            # Leitura do arquivo
             if arquivo_upload.name.endswith('.csv'):
                 df_custos = pd.read_csv(arquivo_upload)
             else:
                 df_custos = pd.read_excel(arquivo_upload)
             
-            # Limpeza
             df_custos.columns = df_custos.columns.str.strip()
             
-            # Busca a coluna de Valor
-            coluna_alvo = None
-            for col in df_custos.columns:
-                if any(x in col.lower() for x in ['valor', 'custo', 'amount', 'total', 'r$']):
-                    try:
-                        # Tenta forçar conversão para número
-                        pd.to_numeric(df_custos[col], errors='coerce')
-                        coluna_alvo = col
-                        break
-                    except:
-                        continue
+            # 1. Identifica colunas de Texto (Descrição) e Valor
+            col_valor = None
+            col_desc = None
             
-            if coluna_alvo:
-                # LÓGICA DE SOMA INTELIGENTE
-                # Verifica se a coluna tem negativos (padrão extrato bancário)
-                soma_negativos = df_custos[df_custos[coluna_alvo] < 0][coluna_alvo].sum()
+            for col in df_custos.columns:
+                col_lower = col.lower()
+                # Acha coluna de valor
+                if any(x in col_lower for x in ['valor', 'custo', 'amount', 'total', 'r$']):
+                    try:
+                        pd.to_numeric(df_custos[col], errors='coerce')
+                        col_valor = col
+                    except: pass
+                # Acha coluna de descrição
+                if any(x in col_lower for x in ['desc', 'historico', 'nome', 'item']):
+                    col_desc = col
+
+            if col_valor:
+                # 2. FILTRO INTELIGENTE: Remove linha de TOTAL
+                if col_desc:
+                    # Remove linhas onde a descrição contém "total" (maiúsculo ou minúsculo)
+                    df_filtrado = df_custos[~df_custos[col_desc].astype(str).str.contains('total', case=False, na=False)]
+                else:
+                    df_filtrado = df_custos
+
+                # 3. Verifica se é Despesa (Negativo) ou Lista de Custos (Positivo)
+                soma_negativos = df_filtrado[df_filtrado[col_valor] < 0][col_valor].sum()
                 
                 if soma_negativos < 0:
                     custo_fixo_total = abs(soma_negativos)
                     st.sidebar.success(f"✅ Despesas (Negativas): R$ {custo_fixo_total:,.2f}")
                 else:
-                    # Se não tiver negativos, soma tudo (assume que é uma lista de custos positiva)
-                    custo_fixo_total = df_custos[coluna_alvo].sum()
-                    st.sidebar.warning("⚠️ Não achei negativos. Somei a coluna inteira.")
-                    st.sidebar.metric("Total Lido", f"R$ {custo_fixo_total:,.2f}")
+                    custo_fixo_total = df_filtrado[col_valor].sum()
+                    st.sidebar.success(f"✅ Soma da Lista: R$ {custo_fixo_total:,.2f}")
+                    if col_desc:
+                        st.sidebar.caption("Linhas contendo 'Total' foram ignoradas.")
                 
+                with st.sidebar.expander("Verificar Dados Lidos"):
+                    st.dataframe(df_filtrado[[col_desc, col_valor]] if col_desc else df_filtrado, hide_index=True)
+
             else:
-                st.sidebar.error("❌ Não encontrei coluna numérica de valor.")
+                st.sidebar.error("❌ Não encontrei coluna de valor.")
         except Exception as e:
-            st.sidebar.error(f"Erro ao ler arquivo: {e}")
+            st.sidebar.error(f"Erro: {e}")
 
 # Exibe Total
 if modo_entrada == "Custos Fixos 2025 (Salvo)":
@@ -134,10 +142,8 @@ st.sidebar.markdown("---")
 
 # --- MÃO DE OBRA ---
 with st.sidebar.expander("2. Capacidade Produtiva", expanded=True):
-    horas_disponiveis = st.number_input("Horas Totais Escritório (Mês)", value=320, help="Ex: 2 advogados x 160h = 320h")
+    horas_disponiveis = st.number_input("Horas Totais Escritório (Mês)", value=320)
     eficiencia = st.slider("Eficiência Produtiva (%)", 50, 100, 75)
-    
-    st.caption("Se os salários/pró-labore já estão na soma acima, deixe aqui zerado.")
     salario_extra = st.number_input("Custo Mão de Obra Extra (R$)", value=0.00)
 
 # CÁLCULOS
@@ -148,9 +154,8 @@ custo_hora_total_base = rateio_hora_fixa + custo_hora_tecnica
 
 st.sidebar.info(f"💰 **Custo Hora (Break-even):**\nR$ {custo_hora_total_base:,.2f}")
 
-# --- 4. ÁREA PRINCIPAL ---
+# --- PRINCIPAL ---
 col1, col2 = st.columns(2)
-
 with col1:
     st.subheader("📁 Novo Caso")
     cliente = st.text_input("Cliente")
@@ -158,42 +163,29 @@ with col1:
     c1, c2 = st.columns(2)
     horas = c1.number_input("Horas Estimadas", 1, 1000, 10)
     custos_var = c2.number_input("Custos Extras (R$)", 0.00)
-    
     st.subheader("🎯 Margens")
     m1, m2 = st.columns(2)
     margem = m1.number_input("Margem Lucro (%)", value=40.0) / 100
     imposto = m2.number_input("Imposto (%)", value=10.0) / 100
 
-# CÁLCULO FINAL
 custo_op = (custo_hora_total_base * horas) + custos_var
 divisor = 1 - (margem + imposto)
-
 if divisor <= 0:
-    st.error("Erro: Margem muito alta.")
     preco = 0
+    st.error("Erro: Margem excessiva.")
 else:
     preco = custo_op / divisor
 
-# RESULTADOS
 with col2:
     st.subheader("📊 Resultado")
     st.metric("Preço Sugerido", f"R$ {preco:,.2f}")
     st.metric("Preço/Hora", f"R$ {(preco/horas):,.2f}")
-    
-    st.bar_chart(pd.DataFrame({
-        'Tipo': ['Custo', 'Imposto', 'Lucro'],
-        'Valor': [custo_op, preco*imposto, preco*margem]
-    }).set_index('Tipo'))
+    st.bar_chart(pd.DataFrame({'Tipo': ['Custo', 'Imposto', 'Lucro'], 'Valor': [custo_op, preco*imposto, preco*margem]}).set_index('Tipo'))
 
-# EXPORTAR
 st.markdown("---")
 if preco > 0:
     c_pdf, c_xls = st.columns(2)
     with c_pdf:
-        pdf_data = gerar_pdf(cliente, servico, horas, preco, preco/horas, margem, imposto, custo_op)
-        st.download_button("📄 PDF Proposta", pdf_data, "proposta.pdf", "application/pdf")
+        st.download_button("📄 PDF Proposta", gerar_pdf(cliente, servico, horas, preco, preco/horas, margem, imposto, custo_op), "proposta.pdf", "application/pdf")
     with c_xls:
-        xls_data = {
-            "Cliente": cliente, "Custo Total": custo_op, "Preço": preco, "Lucro": preco*margem
-        }
-        st.download_button("📊 Excel Memória", gerar_excel(xls_data), "calculo.xlsx")
+        st.download_button("📊 Excel Memória", gerar_excel({"Cliente": cliente, "Preço": preco}), "calculo.xlsx")
